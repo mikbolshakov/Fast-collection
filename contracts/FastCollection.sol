@@ -6,80 +6,81 @@ import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/token/common/ERC2981.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
-contract FastCollection is ERC721, Pausable, ERC2981, AccessControl {
+contract FastCollection is
+    ERC721,
+    ERC721Enumerable,
+    Pausable,
+    ERC2981,
+    AccessControl
+{
     using Counters for Counters.Counter;
     Counters.Counter private _tokenIdCounter;
 
     bytes32 constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+
+    string public baseURI;
     uint256 constant MAX_TOKENS = 10000;
     uint256 constant MINT_PRICE = 0.01 ether;
     string baseTokenURI;
 
-    mapping(address => bool) whiteList;
+    bytes32 public merkleRoot;
 
     constructor(
-        string memory _URI,
+        string memory _initialBaseURI,
         address _defaultAdmin,
         address _receiver,
-        uint96 _feeNumerator
+        uint96 _feeNumerator,
+        bytes32 _merkleRoot
     ) ERC721("FastCollectionToken", "FCT") {
         _setupRole(DEFAULT_ADMIN_ROLE, _defaultAdmin);
         _setupRole(ADMIN_ROLE, _defaultAdmin);
         _setDefaultRoyalty(_receiver, _feeNumerator);
-        setBaseURI(_URI);
+        baseURI = _initialBaseURI;
+        merkleRoot = _merkleRoot;
     }
 
     modifier collectionEnded(uint256 _count) {
-        uint256 total = totalMinted();
+        uint256 total = totalSupply();
         require(total + _count <= MAX_TOKENS, "Max limit");
         _;
     }
 
-    function totalCollectionAmount() public pure returns (uint256) {
+    function totalCollectionAmount() external pure returns (uint256) {
         return MAX_TOKENS;
     }
 
-    function mintPrice() public pure returns (uint256) {
+    function mintPrice() external pure returns (uint256) {
         return MINT_PRICE;
     }
 
-    function checkWhiteList(address _user) external view returns (bool) {
-        return whiteList[_user];
-    }
-
-    function adminRole() public pure returns (bytes32) {
-        return ADMIN_ROLE;
-    }
-
-    function totalMinted() public view returns (uint256) {
-        return _tokenIdCounter.current();
-    }
-
-    function checkCollectionURI() external view returns (string memory) {
-        return _baseURI();
-    }
-
-    function setBaseURI(string memory baseURI) public {
-        baseTokenURI = baseURI;
-    }
-
     function mint(
-        uint256 _count
+        uint256 _count,
+        bytes32[] calldata proof
     ) external payable whenNotPaused collectionEnded(_count) {
         require(
             msg.value >= (MINT_PRICE * _count),
             "Not enough Ether for mint"
         );
+
+        bytes32 computedHash = keccak256(abi.encodePacked(msg.sender));
+        bool isWhitelisted = MerkleProof.verify(proof, merkleRoot, computedHash);
+        require(isWhitelisted, "Address is not in the whitelist!");
+
         for (uint256 i = 0; i < _count; i++) {
             _mintAnElement(msg.sender);
         }
     }
 
     function freeMintForUser(
-        uint256 _count
+        uint256 _count,
+        bytes32[] calldata proof
     ) external whenNotPaused collectionEnded(_count) {
-        require(whiteList[msg.sender], "You are not in WL");
+        bytes32 computedHash = keccak256(abi.encodePacked(msg.sender));
+        bool isWhitelisted = MerkleProof.verify(proof, merkleRoot, computedHash);
+        require(isWhitelisted, "Address is not in the whitelist!");
         for (uint256 i = 0; i < _count; i++) {
             _mintAnElement(msg.sender);
         }
@@ -92,11 +93,6 @@ contract FastCollection is ERC721, Pausable, ERC2981, AccessControl {
         for (uint256 i = 0; i < _count; i++) {
             _mintAnElement(msg.sender);
         }
-    }
-
-    function addUserToWhiteList(address _user) external onlyRole(ADMIN_ROLE) {
-        require(!whiteList[_user], "Already in WL");
-        whiteList[_user] = true;
     }
 
     function saleOff() external onlyRole(ADMIN_ROLE) {
@@ -130,7 +126,7 @@ contract FastCollection is ERC721, Pausable, ERC2981, AccessControl {
         address to,
         uint256 tokenId,
         uint256 batchSize
-    ) internal override {
+    ) internal override(ERC721, ERC721Enumerable) {
         super._beforeTokenTransfer(from, to, tokenId, batchSize);
     }
 
@@ -145,7 +141,12 @@ contract FastCollection is ERC721, Pausable, ERC2981, AccessControl {
 
     function supportsInterface(
         bytes4 interfaceId
-    ) public view override(AccessControl, ERC2981, ERC721) returns (bool) {
+    )
+        public
+        view
+        override(AccessControl, ERC2981, ERC721, ERC721Enumerable)
+        returns (bool)
+    {
         return super.supportsInterface(interfaceId);
     }
 }
